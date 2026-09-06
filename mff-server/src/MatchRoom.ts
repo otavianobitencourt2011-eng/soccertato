@@ -2,7 +2,11 @@ import { Room, Client } from "@colyseus/core";
 import { HeadlessMatchEngine, type PlayerInput } from "./engine.js";
 
 const MATCH_DURATION_SECONDS = 90;
-const TICK_RATE_MS = 1000 / 20; // 20 ticks/segundo — suficiente para arcade 2D
+// Antes 20 ticks/s (50ms): baixo demais pra um arcade em tempo real, dava
+// sensação de resposta atrasada/travada mesmo com a lógica de física correta.
+// 40 ticks/s (25ms) reduz a latência de input pela metade sem pesar o servidor
+// (a simulação é simples: 2 jogadores + 1 bola, sem física pesada).
+const TICK_RATE_MS = 1000 / 40; // 40 ticks/segundo
 
 interface JoinOptions {
   matchId: string;

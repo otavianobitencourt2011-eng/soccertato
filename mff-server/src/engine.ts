@@ -61,6 +61,10 @@ const BASE_SPEED = 235;
 const SPRINT_SPEED = 370;
 const STAMINA_MAX = 100;
 const TACKLE_COOLDOWN_MS = 1700;
+// Atrito da bola expresso "por segundo" (não por tick), para que a física não
+// mude de sensação se a taxa de tick do servidor for ajustada.
+// 0.986^20 ≈ decaimento equivalente ao valor antigo a 20 ticks/s.
+const BALL_FRICTION_PER_SECOND = 0.756;
 
 function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
@@ -219,8 +223,9 @@ export class HeadlessMatchEngine {
     const ball = this.ball;
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
-    ball.vx *= 0.986;
-    ball.vy *= 0.986;
+    const friction = Math.pow(BALL_FRICTION_PER_SECOND, dt);
+    ball.vx *= friction;
+    ball.vy *= friction;
     ball.spin += Math.hypot(ball.vx, ball.vy) * dt * 0.02;
 
     const top = FIELD.wallPad + ball.radius;
@@ -230,7 +235,11 @@ export class HeadlessMatchEngine {
 
     const goalTop = FIELD.height / 2 - FIELD.goalWidth / 2;
     const goalBottom = FIELD.height / 2 + FIELD.goalWidth / 2;
-    const insideGoalMouth = ball.y > goalTop && ball.y < goalBottom;
+    // Antes isto comparava só o CENTRO da bola com o vão do gol. Se o centro
+    // ficasse a menos de um raio de distância da trave (bola visualmente já
+    // entrando pelo vão), a checagem dava "false" e a bola batia na parede
+    // lateral do campo em vez de entrar — um dos motivos do gol não contar.
+    const insideGoalMouth = ball.y + ball.radius > goalTop && ball.y - ball.radius < goalBottom;
 
     if (ball.y < top) {
       ball.y = top;
@@ -249,11 +258,32 @@ export class HeadlessMatchEngine {
         ball.vx *= -0.72;
       }
     } else {
-      if (ball.x < -FIELD.goalDepth - ball.radius) {
+      // Antes o gol só contava quando a bola cruzava TODA a profundidade da
+      // rede (até -goalDepth-radius). Com o atrito (0.986/tick) reduzindo a
+      // velocidade a cada tick, uma bola que entrava mais devagar perdia
+      // força e podia parar dentro da rede sem nunca alcançar esse ponto —
+      // ou seja, entrava visualmente e não contava. Agora o gol conta assim
+      // que a bola INTEIRA cruza a linha do gol (regra do gol-linha real),
+      // e ela ainda pode continuar entrando na rede visualmente depois disso.
+      const goalLineLeft = FIELD.wallPad;
+      const goalLineRight = FIELD.width - FIELD.wallPad;
+      const netBackLeft = -FIELD.goalDepth - ball.radius;
+      const netBackRight = FIELD.width + FIELD.goalDepth + ball.radius;
+
+      // Segura a bola dentro da rede (efeito visual), sem deixá-la sumir do mapa.
+      if (ball.x < netBackLeft) {
+        ball.x = netBackLeft;
+        ball.vx *= -0.4;
+      } else if (ball.x > netBackRight) {
+        ball.x = netBackRight;
+        ball.vx *= -0.4;
+      }
+
+      if (ball.x + ball.radius < goalLineLeft) {
         this.awayScore += 1;
         this.resetPositions();
         return "away";
-      } else if (ball.x > FIELD.width + FIELD.goalDepth + ball.radius) {
+      } else if (ball.x - ball.radius > goalLineRight) {
         this.homeScore += 1;
         this.resetPositions();
         return "home";
