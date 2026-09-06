@@ -7,6 +7,7 @@ const MATCH_DURATION_SECONDS = 90;
 // 40 ticks/s (25ms) reduz a latência de input pela metade sem pesar o servidor
 // (a simulação é simples: 2 jogadores + 1 bola, sem física pesada).
 const TICK_RATE_MS = 1000 / 40; // 40 ticks/segundo
+const PRE_MATCH_DELAY_MS = 6000;
 
 interface JoinOptions {
   matchId: string;
@@ -20,6 +21,7 @@ export class MatchRoom extends Room {
   private sides = new Map<string, "home" | "away">(); // sessionId -> lado
   private loopHandle: ReturnType<typeof setInterval> | null = null;
   private started = false;
+  private matchLiveAtMs = 0;
 
   onCreate(_options: JoinOptions) {
     this.engine = new HeadlessMatchEngine(MATCH_DURATION_SECONDS);
@@ -54,15 +56,20 @@ export class MatchRoom extends Room {
 
   private startMatch() {
     this.started = true;
+    this.matchLiveAtMs = Date.now() + PRE_MATCH_DELAY_MS;
     this.broadcast("match_start", {});
 
     this.loopHandle = setInterval(() => {
+      if (Date.now() < this.matchLiveAtMs) return;
       const dt = TICK_RATE_MS / 1000;
       const { ended, goal } = this.engine.tick(dt);
       const state = this.engine.getState();
 
-      this.broadcast("state", state);
+      // O evento de gol precisa chegar antes do snapshot de kickoff. Assim o
+      // cliente consegue capturar a jogada que acabou e animá-la até o centro,
+      // em vez de receber primeiro a posição já resetada.
       if (goal) this.broadcast("goal", { scorer: goal, homeScore: state.homeScore, awayScore: state.awayScore });
+      this.broadcast("state", state);
 
       if (ended) {
         this.broadcast("match_end", { homeScore: state.homeScore, awayScore: state.awayScore });

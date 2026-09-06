@@ -39,6 +39,7 @@ interface PlayerState extends Vec {
   tackleCooldownMs: number;
   stamina: number;
   side: "home" | "away";
+  kickCooldownMs: number;
 }
 
 interface BallState extends Vec {
@@ -65,7 +66,7 @@ const TACKLE_COOLDOWN_MS = 1700;
 // cliente (letras "Gooool!" + contagem regressiva de 5s) terminar antes da
 // bola voltar a se mover. Levemente maior que a animação do cliente pra
 // garantir que os jogadores continuem parados no centro até o apito.
-const GOAL_PAUSE_MS = 7400;
+const GOAL_PAUSE_MS = 6200;
 // Atrito da bola expresso "por segundo" (não por tick), para que a física não
 // mude de sensação se a taxa de tick do servidor for ajustada.
 // 0.986^20 ≈ decaimento equivalente ao valor antigo a 20 ticks/s.
@@ -101,8 +102,8 @@ export class HeadlessMatchEngine {
 
   constructor(durationSeconds: number) {
     this.timeLeft = durationSeconds;
-    this.home = this.makePlayer("home", FIELD.width * 0.25, { x: 1, y: 0 });
-    this.away = this.makePlayer("away", FIELD.width * 0.75, { x: -1, y: 0 });
+    this.home = this.makePlayer("home", FIELD.width * 0.34, { x: 1, y: 0 });
+    this.away = this.makePlayer("away", FIELD.width * 0.66, { x: -1, y: 0 });
     this.ball = { x: FIELD.width / 2, y: FIELD.height / 2, vx: 0, vy: 0, radius: 11, spin: 0 };
   }
 
@@ -120,6 +121,7 @@ export class HeadlessMatchEngine {
       tackleCooldownMs: 0,
       stamina: STAMINA_MAX,
       side,
+      kickCooldownMs: 0,
     };
   }
 
@@ -134,15 +136,29 @@ export class HeadlessMatchEngine {
   }
 
   private tryShoot(p: PlayerState) {
-    if (this.ended) return;
-    const kickRange = p.radius + this.ball.radius + 22;
-    if (dist(p, this.ball) <= kickRange) {
-      const input = p.side === "home" ? this.homeInput : this.awayInput;
-      const dir = input.moveMagnitude > 0.15 ? normalize({ x: input.moveX, y: input.moveY }) : p.facing;
-      const power = 640;
-      this.ball.vx = dir.x * power;
-      this.ball.vy = dir.y * power;
-    }
+    if (this.ended || p.kickCooldownMs > 0) return;
+    const kickRange = p.radius + this.ball.radius + 28;
+    const d = dist(p, this.ball);
+    if (d > kickRange) return;
+
+    const input = p.side === "home" ? this.homeInput : this.awayInput;
+    const moveAim = input.moveMagnitude > 0.12 ? normalize({ x: input.moveX, y: input.moveY }) : p.facing;
+    const toBall = normalize({ x: this.ball.x - p.x, y: this.ball.y - p.y });
+    const aim = normalize({
+      x: moveAim.x * 0.84 + toBall.x * 0.16,
+      y: moveAim.y * 0.84 + toBall.y * 0.16,
+    });
+
+    // O chute tira a bola do raio do jogador imediatamente. Isso evita que a
+    // colisão do próximo tick "mate" o chute e deixa a direção consistente.
+    const releaseDistance = p.radius + this.ball.radius + 6;
+    this.ball.x = p.x + aim.x * releaseDistance;
+    this.ball.y = p.y + aim.y * releaseDistance;
+
+    const power = input.sprint ? 790 : 735;
+    this.ball.vx = aim.x * power + p.vx * 0.12;
+    this.ball.vy = aim.y * power + p.vy * 0.12;
+    p.kickCooldownMs = 280;
   }
 
   private tryTackle(p: PlayerState) {
@@ -154,18 +170,25 @@ export class HeadlessMatchEngine {
   }
 
   private resetPositions() {
-    this.home.x = FIELD.width * 0.25;
+    this.home.x = FIELD.width * 0.34;
     this.home.y = FIELD.height / 2;
     this.home.vx = 0;
     this.home.vy = 0;
-    this.away.x = FIELD.width * 0.75;
+    this.home.kickCooldownMs = 350;
+    this.home.sliding = false;
+    this.home.sprinting = false;
+    this.away.x = FIELD.width * 0.66;
     this.away.y = FIELD.height / 2;
     this.away.vx = 0;
     this.away.vy = 0;
+    this.away.kickCooldownMs = 350;
+    this.away.sliding = false;
+    this.away.sprinting = false;
     this.ball.x = FIELD.width / 2;
     this.ball.y = FIELD.height / 2;
     this.ball.vx = 0;
     this.ball.vy = 0;
+    this.ball.spin = 0;
   }
 
   // Chamado pelo game loop do servidor (setInterval) — dt em segundos.
@@ -213,6 +236,7 @@ export class HeadlessMatchEngine {
       p.vy = dir.y * speed;
     }
     if (p.tackleCooldownMs > 0) p.tackleCooldownMs = Math.max(0, p.tackleCooldownMs - dt * 1000);
+    if (p.kickCooldownMs > 0) p.kickCooldownMs = Math.max(0, p.kickCooldownMs - dt * 1000);
 
     p.x = clamp(p.x + p.vx * dt, FIELD.wallPad + p.radius, FIELD.width - FIELD.wallPad - p.radius);
     p.y = clamp(p.y + p.vy * dt, FIELD.wallPad + p.radius, FIELD.height - FIELD.wallPad - p.radius);
