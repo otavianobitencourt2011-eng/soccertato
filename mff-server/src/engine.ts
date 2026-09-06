@@ -61,6 +61,11 @@ const BASE_SPEED = 235;
 const SPRINT_SPEED = 370;
 const STAMINA_MAX = 100;
 const TACKLE_COOLDOWN_MS = 1700;
+// Duração da pausa após um gol: dá tempo pra animação de comemoração do
+// cliente (letras "Gooool!" + contagem regressiva de 5s) terminar antes da
+// bola voltar a se mover. Levemente maior que a animação do cliente pra
+// garantir que os jogadores continuem parados no centro até o apito.
+const GOAL_PAUSE_MS = 7400;
 // Atrito da bola expresso "por segundo" (não por tick), para que a física não
 // mude de sensação se a taxa de tick do servidor for ajustada.
 // 0.986^20 ≈ decaimento equivalente ao valor antigo a 20 ticks/s.
@@ -90,6 +95,9 @@ export class HeadlessMatchEngine {
   private awayScore = 0;
   private timeLeft: number;
   private ended = false;
+  // Timestamp (Date.now()) até o qual a simulação fica pausada após um gol.
+  // 0 = sem pausa ativa.
+  private pausedUntilMs = 0;
 
   constructor(durationSeconds: number) {
     this.timeLeft = durationSeconds;
@@ -163,6 +171,15 @@ export class HeadlessMatchEngine {
   // Chamado pelo game loop do servidor (setInterval) — dt em segundos.
   tick(dt: number): { ended: boolean; goal: "home" | "away" | null } {
     if (this.ended) return { ended: true, goal: null };
+
+    if (this.pausedUntilMs > 0) {
+      if (Date.now() < this.pausedUntilMs) {
+        // Pausa pós-gol: tempo congelado, jogadores e bola ficam parados no
+        // centro (já reposicionados em resetPositions) até o apito reiniciar.
+        return { ended: false, goal: null };
+      }
+      this.pausedUntilMs = 0;
+    }
 
     this.timeLeft = Math.max(0, this.timeLeft - dt);
     this.updatePlayer(this.home, this.homeInput, dt);
@@ -282,10 +299,12 @@ export class HeadlessMatchEngine {
       if (ball.x + ball.radius < goalLineLeft) {
         this.awayScore += 1;
         this.resetPositions();
+        this.pausedUntilMs = Date.now() + GOAL_PAUSE_MS;
         return "away";
       } else if (ball.x - ball.radius > goalLineRight) {
         this.homeScore += 1;
         this.resetPositions();
+        this.pausedUntilMs = Date.now() + GOAL_PAUSE_MS;
         return "home";
       }
     }
